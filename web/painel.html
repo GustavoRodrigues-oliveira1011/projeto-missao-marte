@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Painel de Controle ECLSS - Habitat Marte</title>
+  <style>
+    :root { --fundo: #1b1012; --painel: #2a1a1c; --texto: #f4e9e4; --destaque: #e0603a; --ok: #4caf7a; --erro: #e5484d; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--fundo); color: var(--texto); }
+    header { padding: 16px 24px; border-bottom: 2px solid var(--destaque); }
+    h1 { margin: 0; font-size: 1.4rem; }
+    main { display: grid; gap: 16px; padding: 24px; max-width: 960px; margin: 0 auto; }
+    section { background: var(--painel); border-radius: 8px; padding: 16px; }
+    .recursos { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .recurso span { display: block; font-size: 1.6rem; font-weight: bold; }
+    label { display: block; margin-top: 8px; }
+    input, select, button { width: 100%; padding: 8px; margin-top: 4px; font-size: 1rem; }
+    button { background: var(--destaque); color: #fff; border: 0; cursor: pointer; margin-top: 12px; }
+    button:disabled { opacity: .5; cursor: wait; }
+    .sucesso { color: var(--ok); }
+    .erro { color: var(--erro); }
+    #alerta-emergencia { background: var(--erro); color: #fff; padding: 12px; border-radius: 8px; font-weight: bold; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<header><h1>PainelControleWeb - ECLSS Habitat de Marte</h1></header>
+<main>
+  <div id="alerta-emergencia" role="alert" hidden>
+    ALERTA: habitat em nível <span id="alerta-nivel"></span> - solicitações serão reportadas à Terra.
+  </div>
+
+  <section aria-labelledby="titulo-recursos">
+    <h2 id="titulo-recursos">Recursos do habitat</h2>
+    <div class="recursos">
+      <div class="recurso">Oxigênio (kg)<span id="nivel-oxigenio"></span></div>
+      <div class="recurso">Água (L)<span id="nivel-agua"></span></div>
+      <div class="recurso">Astronautas<span id="total-astronautas"></span></div>
+      <div class="recurso">Consumo O₂/dia (kg)<span id="consumo-oxigenio"></span></div>
+      <div class="recurso">Autonomia (dias)<span id="dias-autonomia"></span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="titulo-controle">
+    <h2 id="titulo-controle">Controle de emergência</h2>
+    <label for="nivel-emergencia">Nível de emergência</label>
+    <select id="nivel-emergencia">
+      <option value="NORMAL">NORMAL</option>
+      <option value="ALERTA">ALERTA</option>
+      <option value="CRITICO">CRITICO</option>
+    </select>
+    <label for="cota-racionamento">Cota de racionamento (%)</label>
+    <input id="cota-racionamento" type="number" min="0" max="50" step="1" value="0">
+  </section>
+
+  <section aria-labelledby="titulo-solicitacao">
+    <h2 id="titulo-solicitacao">Solicitar cota extra de oxigênio</h2>
+    <form id="form-solicitacao" novalidate>
+      <label for="astronauta">Astronauta</label>
+      <input id="astronauta" name="astronauta" type="text" required>
+      <label for="quantidade">Quantidade (kg)</label>
+      <input id="quantidade" name="quantidade" type="number" step="0.01">
+      <button id="btn-solicitar" type="submit">Solicitar oxigênio</button>
+    </form>
+    <p id="mensagem-status" aria-live="polite"></p>
+    <h3>Histórico</h3>
+    <ul id="historico"></ul>
+  </section>
+</main>
+
+<script>
+  // Mesmas regras de src/gerenciador_recursos.py
+  const CONSUMO_OXIGENIO_KG = 0.84;
+  const CONSUMO_AGUA_LITROS = 3.5;
+  const TAXAS_EMERGENCIA = { NORMAL: 1.0, ALERTA: 1.25, CRITICO: 1.5 };
+  const COTA_RACIONAMENTO_MAXIMA = 0.5;
+  const ATRASO_PROCESSAMENTO_MS = 600; // simula o processamento do ECLSS (assíncrono)
+
+  const estado = { oxigenio: 500, agua: 2000, astronautas: 4, nivel: "NORMAL", racionamento: 0 };
+  const $ = (id) => document.getElementById(id);
+
+  function fatorConsumo() {
+    return TAXAS_EMERGENCIA[estado.nivel] * (1 - estado.racionamento);
+  }
+
+  function renderizar() {
+    const consumoO2 = CONSUMO_OXIGENIO_KG * fatorConsumo() * estado.astronautas;
+    const consumoAgua = CONSUMO_AGUA_LITROS * fatorConsumo() * estado.astronautas;
+    const autonomia = Math.min(estado.oxigenio / consumoO2, estado.agua / consumoAgua);
+    $("nivel-oxigenio").textContent = estado.oxigenio.toFixed(2);
+    $("nivel-agua").textContent = estado.agua.toFixed(2);
+    $("total-astronautas").textContent = estado.astronautas;
+    $("consumo-oxigenio").textContent = consumoO2.toFixed(2);
+    $("dias-autonomia").textContent = autonomia.toFixed(1);
+    $("alerta-nivel").textContent = estado.nivel;
+    $("alerta-emergencia").hidden = estado.nivel === "NORMAL";
+  }
+
+  function exibirMensagem(texto, tipo) {
+    const mensagem = $("mensagem-status");
+    mensagem.textContent = texto;
+    mensagem.className = tipo;
+  }
+
+  function processarSolicitacao(astronauta, textoQuantidade) {
+    const quantidade = Number(textoQuantidade);
+    if (!astronauta) {
+      return { ok: false, texto: "Solicitação inválida: informe o astronauta." };
+    }
+    if (textoQuantidade === "" || !Number.isFinite(quantidade) || quantidade <= 0) {
+      return { ok: false, texto: "Solicitação inválida: a quantidade deve ser maior que zero." };
+    }
+    const concedido = quantidade * (1 - estado.racionamento);
+    if (concedido > estado.oxigenio) {
+      return { ok: false, texto: `Oxigênio insuficiente: solicitado ${concedido.toFixed(2)} kg, disponível ${estado.oxigenio.toFixed(2)} kg.` };
+    }
+    estado.oxigenio -= concedido;
+    let texto = `Solicitação aprovada: ${concedido.toFixed(2)} kg concedidos a ${astronauta}.`;
+    if (estado.nivel !== "NORMAL") {
+      texto += " Alerta de emergência enviado à Terra.";
+    }
+    const item = document.createElement("li");
+    item.textContent = `${astronauta}: ${concedido.toFixed(2)} kg (${estado.nivel})`;
+    $("historico").appendChild(item);
+    return { ok: true, texto };
+  }
+
+  $("nivel-emergencia").addEventListener("change", (evento) => {
+    estado.nivel = evento.target.value;
+    renderizar();
+  });
+
+  $("cota-racionamento").addEventListener("change", (evento) => {
+    const percentual = Number(evento.target.value) / 100;
+    if (Number.isFinite(percentual) && percentual >= 0 && percentual <= COTA_RACIONAMENTO_MAXIMA) {
+      estado.racionamento = percentual;
+      renderizar();
+    } else {
+      exibirMensagem("Cota de racionamento inválida (0 a 50%).", "erro");
+    }
+  });
+
+  $("form-solicitacao").addEventListener("submit", (evento) => {
+    evento.preventDefault();
+    const botao = $("btn-solicitar");
+    const astronauta = $("astronauta").value.trim();
+    const quantidade = $("quantidade").value;
+    botao.disabled = true;
+    exibirMensagem("Processando solicitação...", "processando");
+    setTimeout(() => {
+      const resultado = processarSolicitacao(astronauta, quantidade);
+      exibirMensagem(resultado.texto, resultado.ok ? "sucesso" : "erro");
+      renderizar();
+      botao.disabled = false;
+    }, ATRASO_PROCESSAMENTO_MS);
+  });
+
+  renderizar();
+</script>
+</body>
+</html>
